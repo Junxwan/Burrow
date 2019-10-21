@@ -104,7 +104,7 @@ func main() {
 	// Set up stderr/stdout to go to a separate log file, if enabled
 	stdoutLogfile := viper.GetString("general.stdout-logfile")
 	if stdoutLogfile != "" {
-		core.OpenOutLog(stdoutLogfile)
+		core.OpenOutLog("logs/" + stdoutLogfile)
 	}
 
 	// Register signal handlers for exiting
