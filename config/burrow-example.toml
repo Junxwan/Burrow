@@ -38,7 +38,9 @@ class-name="kafka"
 servers=[ "kafka01.example.com:10251", "kafka02.example.com:10251", "kafka03.example.com:10251" ]
 # sarama 相關配置，會以client-profile.test設置值做設置，test如果改成別的名稱client-profile.*也需要跟著改
 client-profile="test"
+# 多久(秒)刷新一次topic列表
 topic-refresh=120
+# 多久(秒)刷新一次broker offset列表
 offset-refresh=30
 
 [consumer.local]
@@ -49,8 +51,10 @@ cluster="local"
 servers=[ "kafka01.example.com:10251", "kafka02.example.com:10251", "kafka03.example.com:10251" ]
 # sarama 相關配置，會以client-profile.test設置值做設置，test如果改成別的名稱client-profile.*也需要跟著改
 client-profile="test"
+// 排除哪些消費群組
 group-blacklist="^(console-consumer-|python-kafka-consumer-|quick-).*$"
 group-whitelist=""
+start-latest=true
 
 [consumer.local_zk]
 class-name="kafka_zk"
@@ -71,14 +75,14 @@ class-name="inmemory"
 workers=20
 # 每個 topic下的各個分區最多保存幾個offset資料
 intervals=15
-# offset接收到時已過期太久(秒)則丟棄
+# offset接收到時已過期太久(秒)則丟棄 and 消費者多久(秒)沒提交offset就移除
 expire-group=604800
 # 每個request worker chan buffer 大小，瞬間最大接受的request數量
 min-distance=1
 
 [notifier.default]
 # 警報通知方式，有三種http email null
-class-name="http"
+class-name="null"
 url-open="http://someservice.example.com:1467/v1/event"
 interval=60
 timeout=5
