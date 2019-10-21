@@ -167,6 +167,7 @@ func (module *InMemoryStorage) GetCommunicationChannel() chan *protocol.StorageR
 func (module *InMemoryStorage) Start() error {
 	module.Log.Info("starting")
 
+	// cluster取至config[cluster.*]，如cluster.local就是local
 	for cluster := range viper.GetStringMap("cluster") {
 		module.
 			offsets[cluster] = clusterOffsets{
@@ -284,6 +285,7 @@ func (module *InMemoryStorage) addBrokerOffset(request *protocol.StorageRequest,
 	if request.TopicPartitionCount >= int32(len(topicList)) {
 		// The partition count has increased. Append enough extra partitions, with offset rings, to our slice
 		for i := int32(len(topicList)); i < request.TopicPartitionCount; i++ {
+			// TODO 這邊的Ring是限制Topic下每個Partition最多存放多少個offset ?
 			topicList = append(topicList, ring.New(module.intervals))
 		}
 	}
@@ -379,6 +381,7 @@ func (module *InMemoryStorage) addConsumerOffset(request *protocol.StorageReques
 		return
 	}
 
+	// 如果接受到的offset過期太久則丟棄，丟棄一次算一次Lag，等到下次offset追上來則會恢復成0
 	if request.Timestamp < ((time.Now().Unix() - module.expireGroup) * 1000) {
 		requestLogger.Debug("dropped", zap.String("reason", "old offset"))
 		return
@@ -389,7 +392,8 @@ func (module *InMemoryStorage) addConsumerOffset(request *protocol.StorageReques
 		return
 	}
 
-	// Get the broker offset for this partition, as well as the partition count
+	// 從broker拿到某topic底下某partition Offset與所管理的該topic partition數量
+	// broker內的資料都是由addBrokerOffset()操作而來，該操作由KafkaCluster執行，不能由外部觸發
 	brokerOffset, partitionCount := module.getBrokerOffset(&clusterMap, request.Topic, request.Partition, requestLogger)
 	if partitionCount == 0 {
 		// If the returned partitionCount is zero, there was an error that was already logged. Just stop processing
@@ -425,6 +429,9 @@ func (module *InMemoryStorage) addConsumerOffset(request *protocol.StorageReques
 	if destination.isAppend() {
 		// Calculate the lag against the brokerOffset
 		partitionLag = &protocol.Lag{0}
+		// 如果broker offset > consumer offset代表有lag
+		// 由於broker offset是定期取得非即時，所以consumer offset有可能超越broker offset
+		// 則將視為0 lag
 		if brokerOffset > request.Offset {
 			// Little bit of a hack - because we only get broker offsets periodically, it's possible the consumer offset could be ahead of where we think the broker
 			// is. If the broker appears behind, just treat it as zero lag.
@@ -444,10 +451,11 @@ func findConsumerOffsetDestination(offsetRing *ring.Ring, request *protocol.Stor
 	destSlot := offsetRing
 	prevSlot := offsetRing.Prev()
 
+	// 如果該Consumer之前ring內已有過offset
 	if prevSlot.Value != nil {
 		// nonempty ring, prevSlot is the latest offset
 		if offsetRing.Value != nil {
-			// full ring, offsetRing is the oldest
+			// 該request已是舊資料則捨棄
 			if offsetRing.Value.(*protocol.ConsumerOffset).Order >= request.Order {
 				requestLogger.Debug("dropping backfill commit, already full")
 				return nil
@@ -671,9 +679,11 @@ func (module *InMemoryStorage) deleteGroup(request *protocol.StorageRequest, req
 	requestLogger.Debug("ok")
 }
 
+// https://github.com/linkedin/Burrow/wiki/http-request-list-clusters
 func (module *InMemoryStorage) fetchClusterList(request *protocol.StorageRequest, requestLogger *zap.Logger) {
 	defer close(request.Reply)
 
+	// offsets key資料來自Start()執行後產生
 	clusterList := make([]string, 0, len(module.offsets))
 	for cluster := range module.offsets {
 		clusterList = append(clusterList, cluster)
@@ -693,6 +703,8 @@ func (module *InMemoryStorage) fetchTopicList(request *protocol.StorageRequest, 
 	}
 
 	clusterMap.brokerLock.RLock()
+
+	// KafkaCluster啟動後會從broker拉取最新的topic清單，之後固定以cluster.local.topic-refresh頻率做刷新
 	topicList := make([]string, 0, len(clusterMap.broker))
 	for topic := range clusterMap.broker {
 		topicList = append(topicList, topic)
@@ -810,16 +822,16 @@ func (module *InMemoryStorage) fetchConsumer(request *protocol.StorageRequest, r
 	}
 
 	// Lazily purge consumers that haven't committed in longer than the defined interval. Return as a 404
-	if ((time.Now().Unix() - module.expireGroup) * 1000) > consumerMap.lastCommit {
-		// Swap for a write lock
-		clusterMap.consumerLock.RUnlock()
-
-		clusterMap.consumerLock.Lock()
-		requestLogger.Debug("purge expired consumer", zap.Int64("last_commit", consumerMap.lastCommit))
-		delete(clusterMap.consumer, request.Group)
-		clusterMap.consumerLock.Unlock()
-		return
-	}
+	//if ((time.Now().Unix() - module.expireGroup) * 1000) > consumerMap.lastCommit {
+	//	// Swap for a write lock
+	//	clusterMap.consumerLock.RUnlock()
+	//
+	//	clusterMap.consumerLock.Lock()
+	//	requestLogger.Debug("purge expired consumer", zap.Int64("last_commit", consumerMap.lastCommit))
+	//	delete(clusterMap.consumer, request.Group)
+	//	clusterMap.consumerLock.Unlock()
+	//	return
+	//}
 
 	topicList := getConsumerTopicList(consumerMap)
 	clusterMap.consumerLock.RUnlock()
@@ -876,6 +888,7 @@ func (module *InMemoryStorage) fetchConsumersForTopicList(request *protocol.Stor
 
 	clusterMap.consumerLock.RLock()
 
+	// consumer 資料來自於每次消費__consumer_offsets時所得到的紀錄，再交由addConsumerOffset做處理
 	consumerListForTopic := make([]string, 0)
 	for consumerGroup := range clusterMap.consumer {
 		consumerMap := clusterMap.consumer[consumerGroup]

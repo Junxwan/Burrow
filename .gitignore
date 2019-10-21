@@ -1,4 +1,7 @@
-log
+logs
 .idea
 Burrow
 burrow.toml
+*.out.*
+*.out
+*.pid

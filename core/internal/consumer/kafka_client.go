@@ -14,13 +14,11 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"sync"
-	"time"
-
 	"github.com/Shopify/sarama"
 	"go.uber.org/zap"
-
 	"regexp"
+	"sync"
+	"time"
 
 	"github.com/linkedin/Burrow/core/internal/helpers"
 	"github.com/linkedin/Burrow/core/protocol"
@@ -30,6 +28,8 @@ import (
 // KafkaClient is a consumer module which connects to a single Apache Kafka cluster and reads consumer group information
 // from the offsets topic in the cluster, which is typically __consumer_offsets. The messages in this topic are decoded
 // and the information is forwarded to the storage subsystem for use in evaluations.
+
+// 負責消費topic(默認是__consumer_offsets)並管理consumer
 type KafkaClient struct {
 	// App is a pointer to the application context. This stores the channel to the storage subsystem
 	App *protocol.ApplicationContext
@@ -230,6 +230,9 @@ func (module *KafkaClient) startBackfillPartitionConsumer(partition int32, clien
 	return nil
 }
 
+// 消費某topic來監控Consumer Lag
+// 設置成__consumer_offsets topic 可以監控所有Consumer，因為key跟value的資料
+// 設置成別的topic則只能監控此topic
 func (module *KafkaClient) partitionConsumer(consumer sarama.PartitionConsumer, stopAtOffset *backfillEndOffset) {
 	defer module.running.Done()
 	defer consumer.AsyncClose()
@@ -244,6 +247,8 @@ func (module *KafkaClient) partitionConsumer(consumer sarama.PartitionConsumer, 
 				)
 				return
 			}
+
+			// 紀錄 __consumer_offsets topic 消費狀態
 			if module.reportedConsumerGroup != "" {
 				burrowOffset := &protocol.StorageRequest{
 					RequestType: protocol.StorageSetConsumerOffset,
@@ -256,6 +261,8 @@ func (module *KafkaClient) partitionConsumer(consumer sarama.PartitionConsumer, 
 				}
 				helpers.TimeoutSendStorageRequest(module.App.StorageChannel, burrowOffset, 1)
 			}
+
+			// 分析__consumer_offsets topic內所有Consumer下topic 消費狀態
 			module.processConsumerOffsetsMessage(msg)
 		case err := <-consumer.Errors():
 			module.Log.Error("consume error",
@@ -278,7 +285,7 @@ func (module *KafkaClient) startKafkaConsumer(client helpers.SaramaClient) error
 		return err
 	}
 
-	// Get a partition count for the consumption topic
+	// 查詢該topic有哪些partition
 	partitions, err := client.Partitions(module.offsetsTopic)
 	if err != nil {
 		module.Log.Error("failed to get partition count",
@@ -289,7 +296,8 @@ func (module *KafkaClient) startKafkaConsumer(client helpers.SaramaClient) error
 		return err
 	}
 
-	// Default to bootstrapping the offsets topic, unless configured otherwise
+	// consumer消費offset的起始點策略
+	// 參考 https://kafka.apache.org/documentation/#consumerconfigs  [auto.offset.reset]
 	startFrom := sarama.OffsetOldest
 	if module.startLatest {
 		startFrom = sarama.OffsetNewest
@@ -300,6 +308,8 @@ func (module *KafkaClient) startKafkaConsumer(client helpers.SaramaClient) error
 		zap.String("topic", module.offsetsTopic),
 		zap.Int("count", len(partitions)),
 	)
+
+	// 針對topic下所有分區獨立做訊息消費
 	for _, partition := range partitions {
 		pconsumer, err := consumer.ConsumePartition(module.offsetsTopic, partition, startFrom)
 		if err != nil {
@@ -314,6 +324,7 @@ func (module *KafkaClient) startKafkaConsumer(client helpers.SaramaClient) error
 		go module.partitionConsumer(pconsumer, nil)
 	}
 
+	// 參考https://github.com/linkedin/Burrow/pull/488
 	if module.backfillEarliest {
 		module.Log.Debug("backfilling consumer offsets")
 		// Note: since we are consuming each partition twice,
@@ -412,6 +423,8 @@ func (module *KafkaClient) acceptConsumerGroup(group string) bool {
 	return true
 }
 
+// 透過 __consumer_offsets 紀錄Offset
+// __consumer_offsets topic key是由topic、consumer group、partition組成，value是由offset、timestamp組成
 func (module *KafkaClient) decodeKeyAndOffset(offsetOrder int64, keyBuffer *bytes.Buffer, value []byte, logger *zap.Logger) {
 	// Version 0 and 1 keys are decoded the same way
 	offsetKey, errorAt := decodeOffsetKeyV0(keyBuffer)

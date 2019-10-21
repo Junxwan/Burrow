@@ -26,6 +26,8 @@ import (
 // partition information. It periodically updates a list of all topics and partitions, and also fetches the broker
 // end offset (latest) for each partition. This information is forwarded to the storage module for use in consumer
 // evaluations.
+
+// 負責執行維護topic、partition、offset資料
 type KafkaCluster struct {
 	// App is a pointer to the application context. This stores the channel to the storage subsystem
 	App *protocol.ApplicationContext
@@ -137,14 +139,14 @@ func (module *KafkaCluster) maybeUpdateMetadataAndDeleteTopics(client helpers.Sa
 		module.fetchMetadata = false
 		client.RefreshMetadata()
 
-		// Get the current list of topics and make a map
+		// 取得當前所有topic
 		topicList, err := client.Topics()
 		if err != nil {
 			module.Log.Error("failed to fetch topic list", zap.String("sarama_error", err.Error()))
 			return
 		}
 
-		// We'll use topicPartitions later
+		// 透過topic取得底下所有Partition並判斷這些Partition是否為Leader
 		topicPartitions := make(map[string][]int32)
 		for _, topic := range topicList {
 			partitions, err := client.Partitions(topic)
@@ -168,7 +170,7 @@ func (module *KafkaCluster) maybeUpdateMetadataAndDeleteTopics(client helpers.Sa
 			}
 		}
 
-		// Check for deleted topics if we have a previous map to check against
+		// 如果已有存在的topic則先做清除的動作
 		if module.topicPartitions != nil {
 			for topic := range module.topicPartitions {
 				if _, ok := topicPartitions[topic]; !ok {
@@ -191,7 +193,8 @@ func (module *KafkaCluster) generateOffsetRequests(client helpers.SaramaClient) 
 	requests := make(map[int32]*sarama.OffsetRequest)
 	brokers := make(map[int32]helpers.SaramaBroker)
 
-	// Generate an OffsetRequest for each topic:partition and bucket it to the leader broker
+	// 針對每一個partition所屬的broker預先建立OffsetRequest
+	// 數量是看broker有多少而非partition or topic數量
 	for topic, partitions := range module.topicPartitions {
 		for _, partitionID := range partitions {
 			broker, err := client.Leader(topic, partitionID)
@@ -225,6 +228,7 @@ func (module *KafkaCluster) getOffsets(client helpers.SaramaClient) {
 	var wg = sync.WaitGroup{}
 	var errorTopics = sync.Map{}
 
+	// 取topic下所有partition的offset
 	getBrokerOffsets := func(brokerID int32, request *sarama.OffsetRequest) {
 		defer wg.Done()
 		response, err := brokers[brokerID].GetAvailableOffsets(request)
