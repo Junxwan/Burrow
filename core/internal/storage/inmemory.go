@@ -822,16 +822,16 @@ func (module *InMemoryStorage) fetchConsumer(request *protocol.StorageRequest, r
 	}
 
 	// Lazily purge consumers that haven't committed in longer than the defined interval. Return as a 404
-	//if ((time.Now().Unix() - module.expireGroup) * 1000) > consumerMap.lastCommit {
-	//	// Swap for a write lock
-	//	clusterMap.consumerLock.RUnlock()
-	//
-	//	clusterMap.consumerLock.Lock()
-	//	requestLogger.Debug("purge expired consumer", zap.Int64("last_commit", consumerMap.lastCommit))
-	//	delete(clusterMap.consumer, request.Group)
-	//	clusterMap.consumerLock.Unlock()
-	//	return
-	//}
+	if ((time.Now().Unix() - module.expireGroup) * 1000) > consumerMap.lastCommit {
+		// Swap for a write lock
+		clusterMap.consumerLock.RUnlock()
+
+		clusterMap.consumerLock.Lock()
+		requestLogger.Debug("purge expired consumer", zap.Int64("last_commit", consumerMap.lastCommit))
+		delete(clusterMap.consumer, request.Group)
+		clusterMap.consumerLock.Unlock()
+		return
+	}
 
 	topicList := getConsumerTopicList(consumerMap)
 	clusterMap.consumerLock.RUnlock()
